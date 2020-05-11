@@ -1,0 +1,6 @@
+{
+    "require": {
+	    "codenix-sv/bittrex-api" : "^1.0",
+        "guzzlehttp/guzzle": "^6.5"
+    }
+}
