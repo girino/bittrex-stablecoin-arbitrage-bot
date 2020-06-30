@@ -25,7 +25,11 @@ Searches for the most profitable parameters for all markets that have the curren
 Both the ```-b``` and ```-s``` accpet the following params:
 
 ```--interval```: the time interval for the candles to be analized (can be 'm', '5m', 'h' or 'd', meaning 1 minute, 5 minutes, 1 hour and 1 day respectively).
+
 ```--min-price```: the minimum price to search (defaults to 0.98)
+
 ```--max-price```: the maximum price to search (defaults to 1.02)
+
 ```--step```: the increment on the values searched (defaults to 0.0001)
+
 ```--market```: (only in ```-s```) searches a different market from the one in the config file.

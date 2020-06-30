@@ -3,6 +3,7 @@ require_once('vendor/autoload.php');
 use Codenixsv\BittrexApi\BittrexClient;
 use Codenixsv\BittrexApi\Api\Api;
 use GuzzleHttp\Client;
+use ProgressBar\Manager;
 
 require_once('config.php');
 
@@ -82,12 +83,14 @@ function calculate($candles, $buyPrice, $sellPrice) {
     return array($val, $count);
 }
 
-function getBestSingleMarket($symbol, $interval, $minPrice, $maxPrice, $step) {
+function getBestSingleMarket($symbol, $interval, $minPrice, $maxPrice, $step, $progress=true) {
     global $client;
     $candles = $client->v3Api()->getCandles($symbol, $interval);
     $maxVal = 0.0;
     $maxState = array(0,0,0,0);
+    if ($progress) { $progressBar = new Manager(0, -intval($minPrice*10e8)+intval($maxPrice*10e8)); }
     for ($buyPrice = $maxPrice; $buyPrice > $minPrice; $buyPrice -= $step) {
+        if ($progress) { $progressBar->update(intval(($maxPrice-$buyPrice)*10e8)); }
         for ($sellPrice = $buyPrice + $step; $sellPrice < $maxPrice; $sellPrice += $step) {
             $retArray = calculate($candles, $buyPrice, $sellPrice);
             $val = $retArray[0]; $count = $retArray[1];
@@ -100,8 +103,8 @@ function getBestSingleMarket($symbol, $interval, $minPrice, $maxPrice, $step) {
     return $maxState;
 }
 
-function printMarket($marketArray) {
-    print($marketArray[4] . ":\n");
+function printMarket($marketArray, $volume = false) {
+    print($marketArray[4] . ($volume?" (vol: " . $volume . ")":"") . ":\n");
     $maxStateVal = "    [" . $marketArray[0] . ', ' . $marketArray[1] . ']: ' . (($marketArray[2]-1)*100) . " (" . $marketArray[3] . ")\n";
     print ($maxStateVal);
 }
@@ -114,7 +117,7 @@ function printBestMarkets($interval, $minPrice = 0.98, $maxPrice = 1.02, $step=0
     foreach($data as $result) {
         $mid = ($result['high']+$result['low'])/2.0;
         if ($mid > $minPrice && $mid < $maxPrice) {
-            printMarket(getBestSingleMarket($result['symbol'], $interval, $minPrice, $maxPrice, $step));
+            printMarket(getBestSingleMarket($result['symbol'], $interval, $minPrice, $maxPrice, $step, false), $result['volume']);
         }
     }
 
@@ -148,11 +151,13 @@ function getInterval($options) {
     return $values_map[$interval];
 }
 function getMinPrice($options) {
-    return array_key_exists("min-price", $options) ? floatval($options['min-price']) : 0.98;
+    global $config;
+    return array_key_exists("min-price", $options) ? floatval($options['min-price']) : $config['BUY_PRICE'];
 }
 
 function getMaxPrice($options) {
-    return array_key_exists("max-price", $options) ? floatval($options['max-price']) : 1.02;
+    global $config;
+    return array_key_exists("max-price", $options) ? floatval($options['max-price']) : $config['SELL_PRICE'];
 }
 
 function getStep($options) {
@@ -164,6 +169,12 @@ function getMarketName($options) {
     return array_key_exists("market", $options) ? $options['market'] : $config['MARKET_CURRENCY'] . '-' . $config['BASE_CURRENCY'];
 }
 
+function getResult($value) {
+    if (array_key_exists("success", $value) && $value['success']) {
+        return $value['result'];
+    }
+    throw new Exception($value['message']);
+}
 
 // main
 if (php_sapi_name() == "cli") {
@@ -193,8 +204,8 @@ if (php_sapi_name() == "cli") {
     }
 
     // reads all params here
-    $buyPrice = $config['BUY_PRICE'];
-    $sellPrice = $config['SELL_PRICE'];
+    $buyPrice = getMinPrice($options);
+    $sellPrice = getMaxPrice($options);
     $capital = $config['CAPITAL'];
     $baseCurrency = $config['BASE_CURRENCY'];
     $marketCurrency = $config['MARKET_CURRENCY'];
@@ -222,23 +233,33 @@ if (php_sapi_name() == "cli") {
 
     $marketName = $baseCurrency . '-' . $marketCurrency;
     // market infor
-    $markets = $client->public()->getMarkets()['result'];
-    $marketParams = array();
-    foreach($markets as $m) {
-        if ($m['MarketName'] == $marketName) {
-            $marketParams = $m;
-        break;
+    while (true) {
+        try {
+            $markets = getResult($client->public()->getMarkets());
+            $marketParams = array();
+            foreach($markets as $m) {
+                if ($m['MarketName'] == $marketName) {
+                    $marketParams = $m;
+                break;
+                }
+            }
+            break;
+        } catch (Exception $e) {
+            echo 'Caught exception: ',  $e->getMessage(), "\n";
+            echo 'Sleeping 30 seconds... \n';
+            sleep(30);
         }
     }
+
     while (true) {
         // system('cls');
         try {
-            $marketSummary = $client->public()->getMarketSummary($marketName)['result'];
-            $balanceBaseCurrency = $client->account()->getBalance($baseCurrency)['result'];
-            $balanceMarketCurrency = $client->account()->getBalance($marketCurrency)['result'];
+            $marketSummary = getResult($client->public()->getMarketSummary($marketName));
+            $balanceBaseCurrency = getResult($client->account()->getBalance($baseCurrency));
+            $balanceMarketCurrency = getResult($client->account()->getBalance($marketCurrency));
             $total = $balanceMarketCurrency['Balance'] + $balanceBaseCurrency['Balance'];
             $lucro = $balanceMarketCurrency['Balance'] + $balanceBaseCurrency['Balance'] - $capital;
-            $orders = $client->market()->getOpenOrders()['result'];
+            $orders = getResult($client->market()->getOpenOrders());
             system('clear');
             printf("==========================================\n");
             printf("SALDO %4s...: %14.8f (%14.8f + %14.8f)\n", $marketCurrency, $balanceMarketCurrency['Balance'], $balanceMarketCurrency['Available'], $balanceMarketCurrency['Pending']);
@@ -262,7 +283,9 @@ if (php_sapi_name() == "cli") {
             foreach($orderHistory as $order) {
                 $type = ($order['OrderType'] == 'LIMIT_SELL') ? 'SELL' : ' BUY';
                 $price = $order['PricePerUnit'] > 0 ? $order['PricePerUnit'] : $order['Limit'];
-                printf("%s %s %14.8f (was %14.8f) @ %14.8f\n", substr($order['Closed'], 0, 10), $type, $order['QuantityRemaining'], $order['Quantity'], $price);
+                $commission = ($order['OrderType'] == 'LIMIT_SELL') ? - $order['Commission'] : $order['Commission'];
+                $effectivePrice = ($order['Price'] + $commission)/$order['Quantity'];
+                printf("%s %s %14.8f (was %14.8f) @ %.8f (%.8f)\n", substr($order['Closed'], 0, 10), $type, $order['QuantityRemaining'], $order['Quantity'], $price, $effectivePrice);
                 // print_r($order);
             }
             // printf("==========================================\n");

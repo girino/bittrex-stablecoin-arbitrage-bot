@@ -1,6 +1,7 @@
 {
     "require": {
 	    "codenix-sv/bittrex-api" : "^1.0",
-        "guzzlehttp/guzzle": "^6.5"
+        "guzzlehttp/guzzle": "^6.5",
+	"guiguiboy/php-cli-progress-bar" : "^0.0.4"
     }
 }
