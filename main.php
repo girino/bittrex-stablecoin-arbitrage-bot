@@ -1,9 +1,10 @@
 <?php
 require_once('vendor/autoload.php');
-use Codenixsv\BittrexApi\BittrexClient;
-use Codenixsv\BittrexApi\Api\Api;
+use R3bers\BittrexApi\BittrexClient;
+use R3bers\BittrexApi\Api\Api;
 use GuzzleHttp\Client;
 use ProgressBar\Manager;
+
 
 require_once('config.php');
 
@@ -125,11 +126,11 @@ function printBestMarkets($interval, $minPrice = 0.98, $maxPrice = 1.02, $step=0
 
 function cancelAllOrders() {
     global $client;
-    $orders = $client->market()->getOpenOrders()['result'];
+    $orders = $client->market()->getOpenOrders();
     // cancel old orders
     foreach($orders as $order) {
-        printf("Canceling uuid: %s... ", $order['OrderUuid']);
-        $client->market()->cancel($order['OrderUuid']);
+        printf("Canceling uuid: %s... ", $order['id']);
+        $client->market()->cancel($order['id']);
         printf("Done.\n");
     }
 }
@@ -166,14 +167,12 @@ function getStep($options) {
 
 function getMarketName($options) {
     global $config;
-    return array_key_exists("market", $options) ? $options['market'] : $config['MARKET_CURRENCY'] . '-' . $config['BASE_CURRENCY'];
+    return array_key_exists("market", $options) ? $options['market'] : $config['BASE_CURRENCY'] . '-' . $config['MARKET_CURRENCY'];
 }
 
 function getResult($value) {
-    if (array_key_exists("success", $value) && $value['success']) {
-        return $value['result'];
-    }
-    throw new Exception($value['message']);
+    // useless now
+    return $value;
 }
 
 // main
@@ -238,7 +237,7 @@ if (php_sapi_name() == "cli") {
             $markets = getResult($client->public()->getMarkets());
             $marketParams = array();
             foreach($markets as $m) {
-                if ($m['MarketName'] == $marketName) {
+                if ($m['symbol'] == $marketName) {
                     $marketParams = $m;
                 break;
                 }
@@ -255,50 +254,55 @@ if (php_sapi_name() == "cli") {
         // system('cls');
         try {
             $marketSummary = getResult($client->public()->getMarketSummary($marketName));
+            $ticker = $client->public()->getTicker($marketName);
             $balanceBaseCurrency = getResult($client->account()->getBalance($baseCurrency));
             $balanceMarketCurrency = getResult($client->account()->getBalance($marketCurrency));
-            $total = $balanceMarketCurrency['Balance'] + $balanceBaseCurrency['Balance'];
-            $lucro = $balanceMarketCurrency['Balance'] + $balanceBaseCurrency['Balance'] - $capital;
+            $total = $balanceMarketCurrency['total'] + $balanceBaseCurrency['total'];
+            $lucro = $balanceMarketCurrency['total'] + $balanceBaseCurrency['total'] - $capital;
             $orders = getResult($client->market()->getOpenOrders());
             system('clear');
             printf("==========================================\n");
-            printf("SALDO %4s...: %14.8f (%14.8f + %14.8f)\n", $marketCurrency, $balanceMarketCurrency['Balance'], $balanceMarketCurrency['Available'], $balanceMarketCurrency['Pending']);
-            printf("SALDO %4s...: %14.8f (%14.8f + %14.8f)\n", $baseCurrency, $balanceBaseCurrency['Balance'], $balanceBaseCurrency['Available'], $balanceBaseCurrency['Pending']);
+            printf("SALDO %4s...: %14.8f (%14.8f disponivel)\n", $marketCurrency, $balanceMarketCurrency['total'], $balanceMarketCurrency['available']);
+            printf("SALDO %4s...: %14.8f (%14.8f disponivel)\n", $baseCurrency, $balanceBaseCurrency['total'], $balanceBaseCurrency['available']);
             printf("SALDO TOTAL..: %14.8f %s\n", $total, $baseCurrency);
             printf("SALDO INICIAL: %14.8f %s\n", $capital, $baseCurrency);
             printf("LUCRO........: %14.8f %s\n", $lucro, $baseCurrency);
             printf("%s\n", date('Y-m-d H:i:s T', time()));
             printf("==========================================\n");
-            printf("Cotação     %s %10.8f\n", $marketName, $marketSummary[0]['Last']);
-            printf("Preço Medio %s %10.8f\n", $marketName, $marketSummary[0]['BaseVolume']/$marketSummary[0]['Volume']);
+            printf("Cotação     %s %10.8f\n", $marketName, $ticker['lastTradeRate']);
+            printf("Preço Medio %s %10.8f\n", $marketName, $marketSummary['quoteVolume']/$marketSummary['volume']);
             printf("Definidos: compra %10.8f e venda %10.8f\n", $buyPrice, $sellPrice);
             printf("============== Open Orders ===============\n");
             foreach($orders as $order) {
-                $type = ($order['OrderType'] == 'LIMIT_SELL') ? 'SELL' : ' BUY';
-                $price = $order['PricePerUnit'] > 0 ? $order['PricePerUnit'] : $order['Limit'];
-                printf("%s %s %14.8f (was %14.8f) @ %14.8f\n", substr($order['Opened'], 0, 10), $type, $order['QuantityRemaining'], $order['Quantity'], $price);
+                $type = $order['direction'];
+                $price = $order['limit'];
+                printf("%s %s %14.8f (of %14.8f) @ %14.8f\n", substr($order['createdAt'], 0, 10), $type, $order['fillQuantity'], $order['quantity'], $price);
             }
             printf("============== Order History =============\n");
-            $orderHistory = $client->account()->getOrderHistory($marketName)['result'];
+            $orderHistory = $client->account()->getOrderHistory($marketName);
+            if (count($orderHistory) > 5) {
+                $orderHistory = array_slice($orderHistory, 0, 5);
+            }
             foreach($orderHistory as $order) {
-                $type = ($order['OrderType'] == 'LIMIT_SELL') ? 'SELL' : ' BUY';
-                $price = $order['PricePerUnit'] > 0 ? $order['PricePerUnit'] : $order['Limit'];
-                $commission = ($order['OrderType'] == 'LIMIT_SELL') ? - $order['Commission'] : $order['Commission'];
-                $effectivePrice = ($order['Price'] + $commission)/$order['Quantity'];
-                printf("%s %s %14.8f (was %14.8f) @ %.8f (%.8f)\n", substr($order['Closed'], 0, 10), $type, $order['QuantityRemaining'], $order['Quantity'], $price, $effectivePrice);
+                $type = $order['direction'];
+                $price = $order['limit'];
+                $commission = ($order['direction'] == 'SELL') ? - $order['commission'] : $order['commission'];
+                $effectivePrice = ($order['proceeds'] + $commission)/$order['quantity'];
+                printf("%s %s %14.8f (of %14.8f) @ %.8f (%.8f)\n", substr($order['closedAt'], 0, 10), $type, $order['fillQuantity'], $order['quantity'], $price, $effectivePrice);
                 // print_r($order);
             }
             // printf("==========================================\n");
 
             // open orders with new balance
-            $amount = round($balanceBaseCurrency['Available']/$buyPrice*(1.0-0.002), 8, PHP_ROUND_HALF_DOWN);
-            if ($amount > $marketParams['MinTradeSize']) {
+            $fee = 0.0075;
+            $amount = round($balanceMarketCurrency['available']*(1.0-$fee), 8, PHP_ROUND_HALF_DOWN);
+            if ($amount > $marketParams['minTradeSize']) {
                 printf("BUYING %.8f at %.8f\n",$amount, $buyPrice);
                 print_r($client->market()->buyLimit($marketName, $amount, $buyPrice));
             }
-            if ($balanceMarketCurrency['Available'] > $marketParams['MinTradeSize']) {
-                printf("SELLING %.8f at %.8f\n", $balanceMarketCurrency['Available'], $sellPrice);
-                print_r($client->market()->sellLimit($marketName, $balanceMarketCurrency['Available'], $sellPrice));
+            if ($balanceBaseCurrency['available'] > $marketParams['minTradeSize']) {
+                printf("SELLING %.8f at %.8f\n", $balanceBaseCurrency['available'], $sellPrice);
+                print_r($client->market()->sellLimit($marketName, $balanceBaseCurrency['available'], $sellPrice));
             }
 
             sleep(10);

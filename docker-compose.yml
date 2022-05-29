@@ -1,0 +1,10 @@
+version: '2'
+services:
+ bittrexbot:
+  restart: always 
+  hostname: bittrexbot
+  build:
+   context: .
+   dockerfile: Dockerfile
+  volumes:
+   - ./config.php:/usr/src/app/config.php:ro
